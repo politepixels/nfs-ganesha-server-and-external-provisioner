@@ -262,7 +262,7 @@ func (p *nfsProvisioner) Provision(options controller.ProvisionOptions) (*v1.Per
 	return pv, nil
 }
 
-func (p *nfsProvisioner) InitialProvision(namespace string, configmap string) error {
+func (p *nfsProvisioner) InitialProvision(configmap string, namespace string) error {
 	configMap, err := p.client.CoreV1().ConfigMaps(namespace).Get(configmap, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to get ConfigMap: %v", err)
@@ -279,6 +279,12 @@ func (p *nfsProvisioner) InitialProvision(namespace string, configmap string) er
 		return fmt.Errorf("failed to unmarshal config data: %v", err)
 	}
 
+	exportList, err := p.exporter.ListExports()
+	if err != nil {
+		fmt.Printf("failed to list exports: %v", err)
+	}
+	fmt.Printf("Current Export List %v.\n", exportList)
+
 	for _, export := range nfsConfig.Exports {
 		if err := p.ensureDirectoryAndExport(export); err != nil {
 			return err
@@ -289,15 +295,20 @@ func (p *nfsProvisioner) InitialProvision(namespace string, configmap string) er
 }
 
 func (p *nfsProvisioner) ensureDirectoryAndExport(export Export) error {
+	fmt.Printf("[%s] Initialising import.\n", export.Path)
+
 	exportDir := path.Join(p.exportDir, export.Path)
 	if _, err := os.Stat(exportDir); os.IsNotExist(err) {
 		if err := p.createDirectory(export.Path, "none"); err != nil {
+			fmt.Printf("[%s] Creating export directory: %s.\n", export.Path, exportDir)
 			return fmt.Errorf("failed to ensure directory %s: %v", exportDir, err)
 		}
+	} else {
+		fmt.Printf("[%s] Directory exists: %s.\n", export.Path, exportDir)
 	}
 
 	// Check if the export already exists
-	exists, err := p.exportExists(export.Path)
+	exists, err := p.exportExists(exportDir)
 	if err != nil {
 		return fmt.Errorf("failed to check if export exists: %v", err)
 	}
@@ -305,6 +316,8 @@ func (p *nfsProvisioner) ensureDirectoryAndExport(export Export) error {
 	if exists {
 		glog.Infof("Export for path %s already exists, skipping creation", export.Path)
 		return nil
+	} else {
+		fmt.Printf("[%s] Export didn't exist, creating it: %s.\n", export.Path, exportDir)
 	}
 
 	if _, _, err := p.createExport(export.Path, export.Squash == "Root_Squash"); err != nil {
