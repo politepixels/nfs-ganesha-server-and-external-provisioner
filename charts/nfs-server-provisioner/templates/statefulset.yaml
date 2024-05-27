@@ -82,7 +82,7 @@ spec:
             {{- range $key, $value := .Values.extraArgs }}
             - "-{{ $key }}={{ $value }}"
             {{- end }}
-            - "-configmap=nfs-ganesha-config"
+            - "-configmap={{ include "nfs-provisioner.fullname" . }}"
             - "-configmap-namespace={{ .Release.Namespace }}"
           env:
             - name: POD_IP
