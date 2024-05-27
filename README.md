@@ -1,5 +1,71 @@
 # NFS Ganesha server and external provisioner
 
+-----------
+
+This branch lets you define nfsExports for the server to have initially defined, such as:
+
+Basically the point is so you can provision your whole repo with gitops, but also have it rereference the same pvc on each rebuild.
+
+```
+        nfsExports:
+          - path: /kaniko-build-nfs
+            squash: no_root_squash
+```
+
+You can then reference it in pvcs you make like this
+
+```
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: kaniko-build-nfs
+spec:
+  storageClassName: ci-nfs
+  capacity:
+    storage: 60Gi
+  accessModes:
+    - ReadWriteMany
+  claimRef:
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    namespace: ci
+    name: kaniko-build-nfs
+  mountOptions:
+    - rw
+    - hard
+    - vers=3
+    - noatime
+    - nodiratime
+    - sync
+    - intr
+    - rsize=32768
+    - wsize=32768
+    - retrans=2
+    - timeo=30
+  nfs:
+    path: /export/kaniko-build-nfs
+    server: ci-nfs-nfs-server-provisioner.ci.svc.cluster.local
+  persistentVolumeReclaimPolicy: Delete
+  volumeMode: Filesystem
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kaniko-build-nfs
+  namespace: ci
+spec:
+  storageClassName: ci-nfs
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 60Gi
+  volumeMode: Filesystem
+  volumeName: kaniko-build-nfs
+```
+
+-----------
+
 `nfs-ganesha-server-and-external-provisioner` is an out-of-tree dynamic provisioner for Kubernetes 1.14+. You can use it to quickly & easily deploy shared storage that works almost anywhere. Or it can help you write your own out-of-tree dynamic provisioner by serving as an example implementation of the requirements detailed in [the proposal](https://github.com/kubernetes/kubernetes/pull/30285). 
 
 It works just like in-tree dynamic provisioners: a `StorageClass` object can specify an instance of `nfs-ganesha-server-and-external-provisioner` to be its `provisioner` like it specifies in-tree provisioners such as GCE or AWS. Then, the instance of nfs-ganesha-server-and-external-provisioner will watch for `PersistentVolumeClaims` that ask for the `StorageClass` and automatically create NFS-backed `PersistentVolumes` for them. For more information on how dynamic provisioning works, see [the docs](http://kubernetes.io/docs/user-guide/persistent-volumes/) or [this blog post](http://blog.kubernetes.io/2016/10/dynamic-provisioning-and-storage-in-kubernetes.html).
