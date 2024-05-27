@@ -18,6 +18,7 @@ package volume
 
 import (
 	"fmt"
+	"gopkg.in/yaml.v2"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -78,7 +79,7 @@ const (
 
 // NewNFSProvisioner creates a Provisioner that provisions NFS PVs backed by
 // the given directory.
-func NewNFSProvisioner(exportDir string, client kubernetes.Interface, outOfCluster bool, useGanesha bool, ganeshaConfig string, enableXfsQuota bool, serverHostname string, maxExports int, exportSubnet string) controller.Provisioner {
+func NewNFSProvisioner(exportDir string, client kubernetes.Interface, outOfCluster bool, useGanesha bool, ganeshaConfig string, enableXfsQuota bool, serverHostname string, maxExports int, exportSubnet string, configmap string, configmapNamespace string) controller.Provisioner {
 	var exp exporter
 	if useGanesha {
 		exp = newGaneshaExporter(ganeshaConfig)
@@ -95,7 +96,17 @@ func NewNFSProvisioner(exportDir string, client kubernetes.Interface, outOfClust
 	} else {
 		quotaer = newDummyQuotaer()
 	}
-	return newNFSProvisionerInternal(exportDir, client, outOfCluster, exp, quotaer, serverHostname, maxExports, exportSubnet)
+	provisioner := newNFSProvisionerInternal(exportDir, client, outOfCluster, exp, quotaer, serverHostname, maxExports, exportSubnet)
+
+	if len(configmap) > 0 && len(configmapNamespace) > 0 {
+		err := provisioner.InitialProvision(configmap, configmapNamespace)
+		if err != nil {
+			glog.Fatalf("failed to initial provision %v", err)
+			return nil
+		}
+	}
+
+	return provisioner
 }
 
 func newNFSProvisionerInternal(exportDir string, client kubernetes.Interface, outOfCluster bool, exporter exporter, quotaer quotaer, serverHostname string, maxExports int, exportSubnet string) *nfsProvisioner {
@@ -179,6 +190,15 @@ type nfsProvisioner struct {
 	nodeEnv      string
 }
 
+type NFSConfig struct {
+	Exports []Export `yaml:"exports"`
+}
+
+type Export struct {
+	Path   string `yaml:"path"`
+	Squash string `yaml:"squash"`
+}
+
 var _ controller.Provisioner = &nfsProvisioner{}
 var _ controller.Qualifier = &nfsProvisioner{}
 
@@ -240,6 +260,73 @@ func (p *nfsProvisioner) Provision(options controller.ProvisionOptions) (*v1.Per
 	}
 
 	return pv, nil
+}
+
+func (p *nfsProvisioner) InitialProvision(namespace string, configmap string) error {
+	configMap, err := p.client.CoreV1().ConfigMaps(namespace).Get(configmap, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get ConfigMap: %v", err)
+	}
+
+	configData, ok := configMap.Data["config"]
+	if !ok {
+		return fmt.Errorf("config data not found in ConfigMap")
+	}
+
+	var nfsConfig NFSConfig
+	err = yaml.Unmarshal([]byte(configData), &nfsConfig)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal config data: %v", err)
+	}
+
+	for _, export := range nfsConfig.Exports {
+		if err := p.ensureDirectoryAndExport(export); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (p *nfsProvisioner) ensureDirectoryAndExport(export Export) error {
+	exportDir := path.Join(p.exportDir, export.Path)
+	if _, err := os.Stat(exportDir); os.IsNotExist(err) {
+		if err := p.createDirectory(export.Path, "none"); err != nil {
+			return fmt.Errorf("failed to ensure directory %s: %v", exportDir, err)
+		}
+	}
+
+	// Check if the export already exists
+	exists, err := p.exportExists(export.Path)
+	if err != nil {
+		return fmt.Errorf("failed to check if export exists: %v", err)
+	}
+
+	if exists {
+		glog.Infof("Export for path %s already exists, skipping creation", export.Path)
+		return nil
+	}
+
+	if _, _, err := p.createExport(export.Path, export.Squash == "Root_Squash"); err != nil {
+		return fmt.Errorf("failed to ensure export for directory %s: %v", exportDir, err)
+	}
+
+	return nil
+}
+
+func (p *nfsProvisioner) exportExists(path string) (bool, error) {
+	exportList, err := p.exporter.ListExports()
+	if err != nil {
+		return false, fmt.Errorf("failed to list exports: %v", err)
+	}
+
+	for _, export := range exportList {
+		if export.Path == path {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 type volume struct {

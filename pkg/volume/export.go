@@ -18,14 +18,15 @@ package volume
 
 import (
 	"fmt"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"sync"
 
-	"github.com/golang/glog"
 	"github.com/godbus/dbus"
+	"github.com/golang/glog"
 	"k8s.io/api/core/v1"
 )
 
@@ -35,6 +36,7 @@ type exporter interface {
 	RemoveExportBlock(string, uint16) error
 	Export(string) error
 	Unexport(*v1.PersistentVolume) error
+	ListExports() ([]Export, error)
 }
 
 type exportBlockCreator interface {
@@ -85,6 +87,26 @@ func newGenericExporter(ebc exportBlockCreator, config string, re *regexp.Regexp
 		mapMutex:  &sync.Mutex{},
 		fileMutex: &sync.Mutex{},
 	}
+}
+
+func (e *ganeshaExporter) ListExports() ([]Export, error) {
+
+	data, err := ioutil.ReadFile(e.config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read ganesha config file: %v", err)
+	}
+
+	var exports []Export
+
+	re := regexp.MustCompile(`Path\s*=\s*(\S+);`)
+	matches := re.FindAllStringSubmatch(string(data), -1)
+	for _, match := range matches {
+		if len(match) > 1 {
+			exports = append(exports, Export{Path: match[1]})
+		}
+	}
+
+	return exports, nil
 }
 
 func (e *genericExporter) AddExportBlock(path string, rootSquash bool, exportSubnet string) (string, uint16, error) {
@@ -210,6 +232,12 @@ func (e *kernelExporter) Unexport(volume *v1.PersistentVolume) error {
 	}
 
 	return nil
+}
+
+func (e *kernelExporter) ListExports() ([]Export, error) {
+	var exports []Export
+
+	return exports, nil
 }
 
 type kernelExportBlockCreator struct{}
